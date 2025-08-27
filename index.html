@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<meta charset="UTF-8">
+<title>吸入量監測</title>
+<button id="connectBtn" class="connectBtn">🔌 連接裝置</button>
+<button id="saveBtn" disabled>💾 雲端保存TXT檔</button>
+<button id="restartBtn">🔄 重新開始</button>
+<button id="loginBtn">🔑 登入</button>
+<button id="filesBtn">📂 我的檔案</button>
+<div id="loginStatus" style="margin-top: 24px; font-weight: bold;">
+  狀態： <span id="statusText">未登入 ❌</span>
+</div>
+<canvas id="pressureChart" width="800" height="300"></canvas>
+<label for="patientId">病患編號:</label>
+<input type="text" id="patientId" placeholder="例如: P001">
+
+<label for="patientName">病患姓名:</label>
+<input type="text" id="patientName" placeholder="例如: 王小明">
+
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<style>
+  .connectBtn, #saveBtn, #restartBtn, #loginBtn, #filesBtn {
+    background: linear-gradient(135deg, #1abc68, #16a358);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 28px;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    margin-top: 16px;
+    margin-right: 8px;
+    box-shadow: 0 4px 10px rgba(26, 188, 104, 0.4);
+    transition: all 0.25s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .connectBtn:hover, #saveBtn:hover, #restartBtn:hover, #loginBtn:hover, #filesBtn:hover {
+    background: linear-gradient(135deg, #16a358, #128b4c);
+    box-shadow: 0 6px 14px rgba(26, 188, 104, 0.5);
+    transform: translateY(-1px);
+  }
+  .connectBtn:active, #saveBtn:active, #restartBtn:active,#loginBtn:active, #filesBtn:active { transform: scale(0.97); }
+
+  .connectBtn.connected {
+    background: linear-gradient(135deg, #3498db, #2980b9);
+    box-shadow: 0 4px 10px rgba(52, 152, 219, 0.4);
+  }
+</style>
+
+<script>
+  const { createClient } = window.supabase;
+  const SUPABASE_URL = 'https://jqdtlkxvyrrpnbkyiigg.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpxZHRsa3h2eXJycG5ia3lpaWdnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDgyNTAwMTksImV4cCI6MjA2MzgyNjAxOX0.6ufrl0cNDT1LZqge0yTEGzzJ4IlYYubtKis2_ewkERw';
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const btn = document.getElementById('connectBtn');
+  const saveBtn = document.getElementById('saveBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const loginBtn = document.getElementById('loginBtn');
+  const filesBtn = document.getElementById('filesBtn');
+
+  let samples = []; // { x, lpm, btn }
+  let startTime = null;
+  let triggerTime = null;
+  let stopAt = null; // timestamp (ms) when to stop (trigger + 20s)
+  let collecting = true;
+
+  // Chart.js setup
+  const ctx = document.getElementById('pressureChart').getContext('2d');
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'Liter per Minute',
+          borderColor: 'red',
+          borderWidth: 2,
+          fill: false,
+          data: [],
+          parsing: false,
+          pointRadius: 0,
+          spanGaps: true
+        },
+        {
+          label: 'Button (0/60)',
+          borderColor: 'blue',
+          borderWidth: 1,
+          borderDash: [6, 4],
+          stepped: true,
+          fill: false,
+          data: [],
+          parsing: false,
+          pointRadius: 0,
+          spanGaps: true
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      animation: false,
+      normalized: true,
+      scales: {
+        x: { type: 'linear', title: { display: true, text: 'Seconds' } },
+        y: { title: { display: true, text: 'Liter per Minute' }, min: 0, max: 500 }
+      },
+      plugins: { decimation: { enabled: true, algorithm: 'min-max' } }
+    }
+  });
+
+  // Ensures lines read from serial are complete
+  class LineBreakTransformer {
+    constructor() { this.container = ''; }
+    transform(chunk, controller) {
+      this.container += chunk;
+      const lines = this.container.split(/\r?\n/);
+      this.container = lines.pop();
+      for (const line of lines) controller.enqueue(line);
+    }
+    flush(controller) { if (this.container) controller.enqueue(this.container); }
+  }
+
+  document.getElementById("loginBtn").onclick = function() {
+      window.location.href = "login.html";
+  };
+  
+  document.getElementById("filesBtn").onclick = function() {
+      window.location.href = "userTable.html";
+  };
+
+    // Check login state on load
+  async function checkLogin() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      greeting.textContent = `Hello, ${user.user_metadata?.full_name || user.email || 'User'}!`;
+      greeting.classList.remove('hidden');
+      myfilesBtn.classList.remove('hidden');
+      loginBtn.classList.add('hidden');
+    } else {
+      greeting.classList.add('hidden');
+      myfilesBtn.classList.add('hidden');
+      loginBtn.classList.remove('hidden');
+    }
+  }
+
+  async function updateLoginStatus() {
+    const { data: { user }, error } = await supabase.auth.getUser();
+    const statusText = document.getElementById('statusText');
+  
+    if (user) {
+      statusText.textContent = `目前用戶： ${user.user_metadata?.full_name || user.email} ✅`;
+      statusText.style.color = 'green';
+      loginBtn.style.display = 'none';
+      filesBtn.style.display = 'inline-flex';
+    } else {
+      statusText.textContent = '未登入 ❌';
+      statusText.style.color = 'red';
+      loginBtn.style.display = 'inline-flex';
+      filesBtn.style.display = 'none';
+    }
+  }
+  
+  // Call it on load
+  supabase.auth.onAuthStateChange((event, session) => {
+    updateLoginStatus();
+  });
+
+  async function connect() {
+    btn.textContent = '🔄 連線中...';
+    btn.disabled = true;
+
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 9600 });
+
+      btn.textContent = '✅ 已連線';
+      btn.classList.add('connected');
+
+      const textDecoder = new TextDecoderStream();
+      port.readable.pipeTo(textDecoder.writable);
+      const lineStream = textDecoder.readable
+        .pipeThrough(new TransformStream(new LineBreakTransformer()));
+      reader = lineStream.getReader();
+
+      startTime = null;
+      stopTime = null;
+      collecting = true;
+      points = [];
+      saveBtn.disabled = true;
+      restartBtn.disabled = true;
+
+      readLoop();
+    } catch (err) {
+      console.error('連線失敗', err);
+      btn.textContent = '❌ 嘗試重新連線';
+      btn.disabled = false;
+    }
+  }
+
+  // Regex for tuple like: (5, 0) or (123,60)
+  const TUPLE_RE = /^\s*\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)\s*$/;
+  
+  async function readLoop() {
+    while (true) {
+      const { value: line, done } = await reader.read();
+      if (done) break;
+      if (!line) continue;
+  
+      const m = line.match(TUPLE_RE);
+      if (!m) continue;
+  
+      const lpm = Number(m[1]);
+      const btn = Number(m[2]);
+  
+      // Validate ranges
+      if (!Number.isFinite(lpm) || lpm < 0 || lpm > 500) continue;
+      if (!(btn === 0 || btn === 60)) continue;
+  
+      const now = Date.now();
+      if (startTime === null) startTime = now;
+      const t_s = (now - startTime) / 1000;
+  
+      // Push into buffer
+      samples.push({ x: t_s, lpm, btn });
+  
+      // Maintain last 30 seconds in buffer
+      const cutoff = t_s - 30;
+      samples = samples.filter(p => p.x >= cutoff);
+  
+      // Trigger conditions
+      if (triggerTime === null && (btn === 60 || lpm > 30)) {
+        triggerTime = now;               // ms
+        stopAt = triggerTime + 20000;    // +20s
+      }
+  
+      // Stop condition after 20s from trigger
+      if (stopAt && now >= stopAt) {
+        collecting = false;
+        saveBtn.disabled = false;
+        restartBtn.disabled = false;
+        // Lock final window [t0-10, t0+20]
+        const t0 = (triggerTime - startTime) / 1000;
+        chart.options.scales.x.min = Math.max(0, t0 - 10);
+        chart.options.scales.x.max = t0 + 20;
+        chart.update('none');
+        break;
+      }
+  
+      // Prepare datasets for plotting
+      // Determine current x-window:
+      if (triggerTime) {
+        // During post-trigger phase: show fixed window [t0-10, t0+20] while collecting
+        const t0 = (triggerTime - startTime) / 1000;
+        chart.options.scales.x.min = Math.max(0, t0 - 10);
+        chart.options.scales.x.max = t0 + 20;
+      } else {
+        // Pre-trigger: show the last 30 seconds rolling window
+        chart.options.scales.x.min = Math.max(0, cutoff);
+        chart.options.scales.x.max = t_s;
+      }
+  
+      // Map to chart datasets
+      chart.data.datasets[0].data = samples.map(p => ({ x: p.x, y: p.lpm }));
+      chart.data.datasets[1].data = samples.map(p => ({ x: p.x, y: p.btn }));
+  
+      chart.update('none');
+    }
+  }
+
+
+  document.getElementById('saveBtn').onclick = async function saveData() {
+    const id = document.getElementById('patientId').value.trim();
+    const name = document.getElementById('patientName').value.trim();
+  
+    if (!id || !name) { alert("請輸入病患編號與姓名"); return; }
+    if (!samples || samples.length === 0) { alert("沒有可匯出的資料"); return; }
+  
+    function padRight(s, width) {
+      s = String(s);
+      return s.length >= width ? s.slice(0, width) : s + ' '.repeat(width - s.length);
+    }
+    
+    // choose widths to fit headers and typical values
+    const W_TIME = 10;   // e.g., "1234.56"
+    const W_LPM  = 8;    // e.g., "500"
+    const W_BTN  = 12;   // e.g., "Button(0/60)"
+    
+    let content = '';
+    content += padRight('Time(s)', W_TIME) + ' ' + padRight('LPM', W_LPM) + ' ' + padRight('Button(0/60)', W_BTN) + '\n';
+    
+    samples.forEach(p => {
+      const t = padRight(p.x.toFixed(2), W_TIME);
+      const l = padRight(p.lpm, W_LPM);
+      const b = padRight(p.btn, W_BTN);
+      content += `${t} ${l} ${b}\n`;
+    });
+  
+    // Timestamp yyyymmddhhmm
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const min = String(now.getMinutes()).padStart(2, '0');
+    const datetime = `${yyyy}${mm}${dd}${hh}${min}`;
+  
+    const fileName = `${name}_${datetime}.txt`;
+  
+    // Get logged-in user
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
+      alert('請先登入才能上傳檔案');
+      return;
+    }
+  
+    const uid = user.id;
+    const filePath = `${uid}/${fileName}`;
+    const blob = new Blob([content], { type: "text/plain" });
+  
+    // Local download
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  
+    // Upload to Supabase
+    const { error } = await supabase.storage.from('records').upload(filePath, blob, { upsert: true });
+    if (error) {
+      alert('上傳失敗：' + error.message);
+    } else {
+      alert('儲存與上傳成功！檔案路徑為：' + filePath);
+    }
+  };
+
+  btn.addEventListener('click', connect);
+
+  restartBtn.addEventListener('click', () => {
+    location.reload();
+  });
+
+</script>
