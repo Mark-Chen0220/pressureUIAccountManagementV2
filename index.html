@@ -14,8 +14,8 @@
 <label for="patientId">病患編號:</label>
 <input type="text" id="patientId" placeholder="例如: P001">
 
-<label for="patientName">病患姓名:</label>
-<input type="text" id="patientName" placeholder="例如: 王小明">
+<label for="patientName">病患身分證字號:</label>
+<input type="text" id="patientName" placeholder="例如: A123456789">
 
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -216,7 +216,7 @@
       if (!m) continue;
   
       const lpm = Number(m[1]);
-      const btn = Number(m[2]);
+      const btn = Number(m[2]) + 40;
   
       // Validate ranges
       if (!Number.isFinite(lpm) || lpm < 0 || lpm > 500) continue;
@@ -346,4 +346,5 @@
   });
 
 </script>
+
 
