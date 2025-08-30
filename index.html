@@ -221,7 +221,7 @@
   
       // Validate ranges
       if (!Number.isFinite(lpm) || lpm < 0 || lpm > 200) continue;
-      if (!(btn === 0 || btn === 60)) continue;
+      if (!(btn === 0 || btn === 60 || btn === 100)) continue;
       if (btn === 60) btn = btn + 40;
   
       const now = Date.now();
@@ -348,6 +348,7 @@
   });
 
 </script>
+
 
 
 
