@@ -217,11 +217,12 @@
       if (!m) continue;
   
       const lpm = Number(m[1]);
-      const btn = Number(m[2]) + 40;
+      const btn = Number(m[2]);
   
       // Validate ranges
-      if (!Number.isFinite(lpm) || lpm < 0 || lpm > 500) continue;
+      if (!Number.isFinite(lpm) || lpm < 0 || lpm > 200) continue;
       if (!(btn === 0 || btn === 60)) continue;
+      if (btn === 60) btn = btn + 40;
   
       const now = Date.now();
       if (startTime === null) startTime = now;
@@ -347,6 +348,7 @@
   });
 
 </script>
+
 
 
 
